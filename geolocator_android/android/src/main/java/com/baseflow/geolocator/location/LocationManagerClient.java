@@ -8,6 +8,7 @@ import android.location.Location;
 import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Looper;
 
 import androidx.annotation.NonNull;
@@ -20,8 +21,15 @@ import com.baseflow.geolocator.errors.ErrorCallback;
 import com.baseflow.geolocator.errors.ErrorCodes;
 
 import java.util.List;
+import java.util.concurrent.Executor;
 
 class LocationManagerClient implements LocationClient, LocationListenerCompat {
+
+  /** Supplies the looper that location updates are delivered on. */
+  interface LooperProvider {
+    @Nullable
+    Looper get();
+  }
 
   private static final long TWO_MINUTES = 120000;
   private final LocationManager locationManager;
@@ -35,12 +43,40 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
   @Nullable private PositionChangedCallback positionChangedCallback;
   @Nullable private ErrorCallback errorCallback;
 
+  // LocationManager calls are binder transactions that block while the system location service
+  // is slow; they run on [worker], off the Android main thread, in call order. Location updates
+  // arrive on the worker's looper, and results go back to the main thread through [mainThread].
+  private final Executor worker;
+  private final LooperProvider workerLooper;
+  private final Executor mainThread;
+  // What the caller asked for; queued start work checks it, so a stop that comes first wins.
+  private volatile boolean active = false;
+
   public LocationManagerClient(
       @NonNull Context context, @Nullable LocationOptions locationOptions) {
+    this(
+        context,
+        locationOptions,
+        new NmeaClient(context, locationOptions),
+        NmeaThread::post,
+        () -> NmeaThread.handler().getLooper(),
+        new Handler(Looper.getMainLooper())::post);
+  }
+
+  LocationManagerClient(
+      @NonNull Context context,
+      @Nullable LocationOptions locationOptions,
+      @NonNull NmeaClient nmeaClient,
+      @NonNull Executor worker,
+      @NonNull LooperProvider workerLooper,
+      @NonNull Executor mainThread) {
     this.locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
     this.locationOptions = locationOptions;
     this.context = context;
-    this.nmeaClient = new NmeaClient(context, locationOptions);
+    this.nmeaClient = nmeaClient;
+    this.worker = worker;
+    this.workerLooper = workerLooper;
+    this.mainThread = mainThread;
   }
 
   static boolean isBetterLocation(Location location, Location bestLocation) {
@@ -143,20 +179,28 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
     return false;
   }
 
-  @SuppressLint("MissingPermission")
   @Override
   public void startPositionUpdates(
       Activity activity,
       PositionChangedCallback positionChangedCallback,
       ErrorCallback errorCallback) {
-
-    if (!checkLocationService(context)) {
-      errorCallback.onError(ErrorCodes.locationServicesDisabled);
-      return;
-    }
-
     this.positionChangedCallback = positionChangedCallback;
     this.errorCallback = errorCallback;
+    this.active = true;
+    worker.execute(this::requestUpdates);
+  }
+
+  @SuppressLint("MissingPermission")
+  private void requestUpdates() {
+    if (!active) {
+      return;
+    }
+    final ErrorCallback errorCallback = this.errorCallback;
+
+    if (!checkLocationService(context)) {
+      postError(errorCallback, ErrorCodes.locationServicesDisabled);
+      return;
+    }
 
     LocationAccuracy accuracy = LocationAccuracy.best;
     long timeInterval = 0;
@@ -175,7 +219,7 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
     this.currentLocationProvider = determineProvider(this.locationManager, accuracy);
 
     if (this.currentLocationProvider == null) {
-      errorCallback.onError(ErrorCodes.locationServicesDisabled);
+      postError(errorCallback, ErrorCodes.locationServicesDisabled);
       return;
     }
 
@@ -193,15 +237,30 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
         this.currentLocationProvider,
         locationRequest,
         this,
-        Looper.getMainLooper());
+        workerLooper.get());
   }
 
-  @SuppressLint("MissingPermission")
   @Override
   public void stopPositionUpdates() {
+    this.active = false;
+    worker.execute(this::removeUpdates);
+  }
+
+  private void removeUpdates() {
+    // A start() that came after this stop() wins; with nothing registered there is nothing to
+    // remove, so no binder call is made.
+    if (active || !isListening) {
+      return;
+    }
     this.isListening = false;
     this.nmeaClient.stop();
     this.locationManager.removeUpdates(this);
+  }
+
+  private void postError(@Nullable ErrorCallback callback, ErrorCodes code) {
+    if (callback != null) {
+      mainThread.execute(() -> callback.onError(code));
+    }
   }
 
   @Override
@@ -209,9 +268,11 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
     if (isBetterLocation(location, currentBestLocation)) {
       this.currentBestLocation = location;
 
-      if (this.positionChangedCallback != null) {
+      final PositionChangedCallback callback = this.positionChangedCallback;
+      if (callback != null) {
         nmeaClient.enrichExtrasWithNmea(location);
-        this.positionChangedCallback.onPositionChanged(currentBestLocation);
+        final Location best = currentBestLocation;
+        mainThread.execute(() -> callback.onPositionChanged(best));
       }
     }
   }
@@ -244,9 +305,7 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
         this.locationManager.removeUpdates(this);
       }
 
-      if (this.errorCallback != null) {
-        errorCallback.onError(ErrorCodes.locationServicesDisabled);
-      }
+      postError(this.errorCallback, ErrorCodes.locationServicesDisabled);
 
       this.currentLocationProvider = null;
     }
