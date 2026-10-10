@@ -29,8 +29,8 @@ final class NmeaThread {
     return handler;
   }
 
-  /** Runs {@code task} on the thread, in submission order. */
-  static void post(@NonNull Runnable task) {
+  /** Runs {@code task} on the thread, in submission order; never races {@link #quit()}. */
+  static synchronized void post(@NonNull Runnable task) {
     handler().post(task);
   }
 

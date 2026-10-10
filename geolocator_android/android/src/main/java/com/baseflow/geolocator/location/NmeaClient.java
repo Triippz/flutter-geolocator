@@ -21,6 +21,12 @@ import java.util.concurrent.Executor;
 
 public class NmeaClient {
 
+  /** Supplies the handler that listener callbacks run on. */
+  interface HandlerProvider {
+    @Nullable
+    Handler get();
+  }
+
   public static final String NMEA_ALTITUDE_EXTRA = "geolocator_mslAltitude";
   public static final String GNSS_SATELLITE_COUNT_EXTRA = "geolocator_mslSatelliteCount";
   public static final String GNSS_SATELLITES_USED_IN_FIX_EXTRA = "geolocator_mslSatellitesUsedInFix";
@@ -45,7 +51,8 @@ public class NmeaClient {
   // Registration runs on [registrationExecutor], off the Android main thread: the calls are
   // binder transactions that block while the system location service is slow (ANR).
   private final Executor registrationExecutor;
-  @Nullable private final Handler callbackHandler;
+  // Read at registration time, so a thread restarted after the plugin detaches is used.
+  private final HandlerProvider callbackHandler;
   private final boolean nmeaSupported;
   // What the caller asked for; read by queued registration work.
   private volatile boolean active = false;
@@ -57,7 +64,7 @@ public class NmeaClient {
         context,
         locationOptions,
         NmeaThread::post,
-        NmeaThread.handler(),
+        NmeaThread::handler,
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.N);
   }
 
@@ -65,7 +72,7 @@ public class NmeaClient {
       @NonNull Context context,
       @Nullable LocationOptions locationOptions,
       @NonNull Executor registrationExecutor,
-      @Nullable Handler callbackHandler,
+      @NonNull HandlerProvider callbackHandler,
       boolean nmeaSupported) {
     this.context = context;
     this.locationOptions = locationOptions;
@@ -130,8 +137,9 @@ public class NmeaClient {
       if (nmeaSupported && locationManager != null) {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED) {
-          locationManager.addNmeaListener(nmeaMessageListener, callbackHandler);
-          locationManager.registerGnssStatusCallback(gnssCallback, callbackHandler);
+          Handler handler = callbackHandler.get();
+          locationManager.addNmeaListener(nmeaMessageListener, handler);
+          locationManager.registerGnssStatusCallback(gnssCallback, handler);
           listenerAdded = true;
         }
       }

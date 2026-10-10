@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -58,7 +59,7 @@ public class NmeaClientTest {
             context,
             LocationOptions.parseArguments(null),
             executor,
-            /* callbackHandler= */ null,
+            /* callbackHandler= */ () -> null,
             /* nmeaSupported= */ true);
   }
 
@@ -90,17 +91,44 @@ public class NmeaClientTest {
   }
 
   @Test
-  public void registrationAndRemovalRunInCallOrder() {
+  public void startStopStartRegistersOnceAndKeepsTheListener() {
     client.start();
+    executor.runAll();
     client.stop();
     client.start();
     executor.runAll();
 
+    // The last call was start(), so the listener stays registered, added only once.
+    verify(locationManager, times(1))
+        .addNmeaListener(any(OnNmeaMessageListener.class), (Handler) any());
+    verify(locationManager, never()).removeNmeaListener(any(OnNmeaMessageListener.class));
+  }
+
+  @Test
+  public void startThenStopRegistersThenRemovesInOrder() {
+    client.start();
+    client.stop();
+    client.start();
+    client.stop();
+    executor.runAll();
+
     InOrder order = inOrder(locationManager);
+    order.verify(locationManager, never())
+        .addNmeaListener(any(OnNmeaMessageListener.class), (Handler) any());
+    verifyNoInteractions(locationManager);
+
+    client.start();
+    executor.runAll();
+    client.stop();
+    executor.runAll();
+    order = inOrder(locationManager);
     order.verify(locationManager)
         .addNmeaListener(any(OnNmeaMessageListener.class), (Handler) any());
-    // The last call was start(), so the listener stays registered.
-    verify(locationManager, never()).removeNmeaListener(any(OnNmeaMessageListener.class));
+    order.verify(locationManager)
+        .registerGnssStatusCallback(any(GnssStatus.Callback.class), (Handler) any());
+    order.verify(locationManager).removeNmeaListener(any(OnNmeaMessageListener.class));
+    order.verify(locationManager)
+        .unregisterGnssStatusCallback(any(GnssStatus.Callback.class));
   }
 
   @Test
