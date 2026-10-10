@@ -4,6 +4,10 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -17,6 +21,11 @@ import android.location.GnssStatus;
 import android.location.LocationManager;
 import android.location.OnNmeaMessageListener;
 import android.os.Handler;
+import java.util.List;
+import java.util.ArrayList;
+import org.mockito.ArgumentCaptor;
+import android.os.Bundle;
+import android.location.Location;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -151,5 +160,45 @@ public class NmeaClientTest {
 
     verify(locationManager, never())
         .addNmeaListener(any(OnNmeaMessageListener.class), (Handler) any());
+  }
+
+  private static GnssStatus status(int count, int usedInFix) {
+    GnssStatus status = mock(GnssStatus.class);
+    when(status.getSatelliteCount()).thenReturn(count);
+    when(status.usedInFix(anyInt())).thenAnswer(call -> (int) call.getArgument(0) < usedInFix);
+    return status;
+  }
+
+  @Test
+  public void satelliteCountAndUsedInFixAlwaysComeFromTheSameUpdate() {
+    client.start();
+    executor.runAll();
+    ArgumentCaptor<GnssStatus.Callback> callback =
+        ArgumentCaptor.forClass(GnssStatus.Callback.class);
+    verify(locationManager).registerGnssStatusCallback(callback.capture(), (Handler) any());
+    callback.getValue().onSatelliteStatusChanged(status(10, 4));
+
+    // A new status update lands while the extras are being written.
+    Bundle extras = mock(Bundle.class);
+    List<Double> written = new ArrayList<>();
+    doAnswer(
+            call -> {
+              written.add(call.getArgument(1));
+              if (written.size() == 1) {
+                callback.getValue().onSatelliteStatusChanged(status(20, 15));
+              }
+              return null;
+            })
+        .when(extras)
+        .putDouble(anyString(), anyDouble());
+    Location location = mock(Location.class);
+    when(location.getExtras()).thenReturn(extras);
+
+    client.enrichExtrasWithNmea(location);
+
+    verify(extras).putDouble(eq(NmeaClient.GNSS_SATELLITE_COUNT_EXTRA), anyDouble());
+    // The first two writes are the count and used-in-fix pair from one update.
+    assertEquals(10.0, written.get(0), 0.0);
+    assertEquals(4.0, written.get(1), 0.0);
   }
 }

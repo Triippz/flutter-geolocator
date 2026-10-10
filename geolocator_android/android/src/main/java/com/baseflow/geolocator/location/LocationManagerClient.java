@@ -154,24 +154,34 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
       return;
     }
 
-    listener.onLocationServiceResult(checkLocationService(context));
+    // The provider checks are binder calls; run them on the worker, answer on the main thread.
+    worker.execute(
+        () -> {
+          final boolean enabled = checkLocationService(context);
+          mainThread.execute(() -> listener.onLocationServiceResult(enabled));
+        });
   }
 
   @Override
   public void getLastKnownPosition(
       PositionChangedCallback positionChangedCallback, ErrorCallback errorCallback) {
-    Location bestLocation = null;
+    // getProviders and getLastKnownLocation are binder calls; run them on the worker.
+    worker.execute(
+        () -> {
+          Location bestLocation = null;
 
-    for (String provider : locationManager.getProviders(true)) {
-      @SuppressLint("MissingPermission")
-      Location location = locationManager.getLastKnownLocation(provider);
+          for (String provider : locationManager.getProviders(true)) {
+            @SuppressLint("MissingPermission")
+            Location location = locationManager.getLastKnownLocation(provider);
 
-      if (location != null && isBetterLocation(location, bestLocation)) {
-        bestLocation = location;
-      }
-    }
+            if (location != null && isBetterLocation(location, bestLocation)) {
+              bestLocation = location;
+            }
+          }
 
-    positionChangedCallback.onPositionChanged(bestLocation);
+          final Location best = bestLocation;
+          mainThread.execute(() -> positionChangedCallback.onPositionChanged(best));
+        });
   }
 
   @Override
@@ -192,7 +202,9 @@ class LocationManagerClient implements LocationClient, LocationListenerCompat {
 
   @SuppressLint("MissingPermission")
   private void requestUpdates() {
-    if (!active) {
+    // Already registered: a queued stop skipped because a later start wins, so this start has
+    // nothing to add.
+    if (!active || isListening) {
       return;
     }
     final ErrorCallback errorCallback = this.errorCallback;

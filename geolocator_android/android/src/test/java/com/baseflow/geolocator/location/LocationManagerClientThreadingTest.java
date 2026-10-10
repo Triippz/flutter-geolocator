@@ -15,6 +15,7 @@ import android.location.Location;
 import android.location.LocationManager;
 import android.os.Bundle;
 
+import com.baseflow.geolocator.errors.ErrorCodes;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Queue;
@@ -72,6 +73,16 @@ public class LocationManagerClientThreadingTest {
     return calls;
   }
 
+  private int callsNamed(String name) {
+    int calls = 0;
+    for (Invocation invocation : mockingDetails(locationManager).getInvocations()) {
+      if (invocation.getMethod().getName().equals(name)) {
+        calls++;
+      }
+    }
+    return calls;
+  }
+
   @Test
   public void startMakesNoLocationManagerCallOnTheCallingThread() {
     client.startPositionUpdates(null, location -> {}, error -> {});
@@ -118,5 +129,55 @@ public class LocationManagerClientThreadingTest {
     assertNull(received.get());
     mainThread.runAll();
     assertSame(location, received.get());
+  }
+
+  @Test
+  public void queuedStartStopStartRegistersForUpdatesOnce() {
+    client.startPositionUpdates(null, location -> {}, error -> {});
+    client.stopPositionUpdates();
+    client.startPositionUpdates(null, location -> {}, error -> {});
+    worker.runAll();
+
+    assertEquals(1, callsNamed("requestLocationUpdates"));
+    assertEquals(0, callsNamed("removeUpdates"));
+  }
+
+  @Test
+  public void serviceCheckMakesNoLocationManagerCallOnTheCallingThread() {
+    AtomicReference<Boolean> enabled = new AtomicReference<>();
+
+    client.isLocationServiceEnabled(
+        new LocationServiceListener() {
+          @Override
+          public void onLocationServiceResult(boolean isEnabled) {
+            enabled.set(isEnabled);
+          }
+
+          @Override
+          public void onLocationServiceError(ErrorCodes errorCode) {}
+        });
+
+    assertEquals(0, locationManagerCalls());
+    worker.runAll();
+    assertEquals(true, locationManagerCalls() > 0);
+    assertNull(enabled.get());
+    mainThread.runAll();
+    assertEquals(Boolean.TRUE, enabled.get());
+  }
+
+  @Test
+  public void lastKnownPositionMakesNoLocationManagerCallOnTheCallingThread() {
+    Location last = mock(Location.class);
+    when(locationManager.getLastKnownLocation(anyString())).thenReturn(last);
+    AtomicReference<Location> received = new AtomicReference<>();
+
+    client.getLastKnownPosition(received::set, error -> {});
+
+    assertEquals(0, locationManagerCalls());
+    worker.runAll();
+    assertEquals(true, locationManagerCalls() > 0);
+    assertNull(received.get());
+    mainThread.runAll();
+    assertSame(last, received.get());
   }
 }

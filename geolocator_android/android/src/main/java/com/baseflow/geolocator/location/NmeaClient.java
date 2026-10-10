@@ -44,8 +44,18 @@ public class NmeaClient {
 
   // Written on the NMEA thread, read when a location is enriched.
   private volatile String lastNmeaMessage;
-  private volatile double gnss_satellite_count;
-  private volatile double gnss_satellites_used_in_fix;
+  /** One GNSS status update's counts, published together so a reader never mixes updates. */
+  private static final class SatelliteCounts {
+    final double count;
+    final double usedInFix;
+
+    SatelliteCounts(double count, double usedInFix) {
+      this.count = count;
+      this.usedInFix = usedInFix;
+    }
+  }
+
+  private volatile SatelliteCounts satelliteCounts = new SatelliteCounts(0, 0);
   @Nullable private volatile Calendar lastNmeaMessageTime;
 
   // Registration runs on [registrationExecutor], off the Android main thread: the calls are
@@ -93,8 +103,8 @@ public class NmeaClient {
         gnssCallback = new GnssStatus.Callback() {
             @Override
             public void onSatelliteStatusChanged(@NonNull GnssStatus status) {
-                // Count in locals and publish each field once: enrichExtrasWithNmea reads
-                // them from another thread and must never see a partial count.
+                // Count in locals and publish both counts as one object: enrichExtrasWithNmea
+                // reads them from another thread and must never see a partial or mixed pair.
                 int count = status.getSatelliteCount();
                 int usedInFix = 0;
                 for (int i = 0; i < count; ++i) {
@@ -102,8 +112,7 @@ public class NmeaClient {
                         ++usedInFix;
                     }
                 }
-                gnss_satellite_count = count;
-                gnss_satellites_used_in_fix = usedInFix;
+                satelliteCounts = new SatelliteCounts(count, usedInFix);
             }
         };
     }
@@ -180,8 +189,9 @@ public class NmeaClient {
     if (location.getExtras() == null) {
       location.setExtras(Bundle.EMPTY);
     }
-    location.getExtras().putDouble(GNSS_SATELLITE_COUNT_EXTRA, gnss_satellite_count);
-    location.getExtras().putDouble(GNSS_SATELLITES_USED_IN_FIX_EXTRA, gnss_satellites_used_in_fix);
+    final SatelliteCounts counts = satelliteCounts;
+    location.getExtras().putDouble(GNSS_SATELLITE_COUNT_EXTRA, counts.count);
+    location.getExtras().putDouble(GNSS_SATELLITES_USED_IN_FIX_EXTRA, counts.usedInFix);
 
     if (lastNmeaMessage != null && locationOptions != null && listenerAdded) {
 
