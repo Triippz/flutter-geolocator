@@ -93,13 +93,17 @@ public class NmeaClient {
         gnssCallback = new GnssStatus.Callback() {
             @Override
             public void onSatelliteStatusChanged(@NonNull GnssStatus status) {
-                gnss_satellite_count = status.getSatelliteCount();
-                gnss_satellites_used_in_fix = 0;
-                for (int i = 0; i < gnss_satellite_count; ++i) {
+                // Count in locals and publish each field once: enrichExtrasWithNmea reads
+                // them from another thread and must never see a partial count.
+                int count = status.getSatelliteCount();
+                int usedInFix = 0;
+                for (int i = 0; i < count; ++i) {
                     if (status.usedInFix(i)) {
-                        ++gnss_satellites_used_in_fix;
+                        ++usedInFix;
                     }
                 }
+                gnss_satellite_count = count;
+                gnss_satellites_used_in_fix = usedInFix;
             }
         };
     }
