@@ -64,6 +64,7 @@ public class GeolocatorPlugin implements FlutterPlugin, ActivityAware {
 
   @Override
   public void onAttachedToEngine(@NonNull FlutterPluginBinding flutterPluginBinding) {
+    NmeaClient.retainThread();
     methodCallHandler =
         new MethodCallHandlerImpl(
             this.permissionManager, this.geolocationManager, this.locationAccuracyManager);

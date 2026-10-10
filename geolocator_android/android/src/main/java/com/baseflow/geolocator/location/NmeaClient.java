@@ -105,9 +105,17 @@ public class NmeaClient {
     }
   }
 
-  /** Stops the shared NMEA thread after its queued work; call when the plugin detaches. */
+  /** Call when the plugin attaches to a Flutter engine; pairs with {@link #releaseThread()}. */
+  public static void retainThread() {
+    NmeaThread.retain();
+  }
+
+  /**
+   * Call when the plugin detaches from a Flutter engine. The shared NMEA thread stops only when
+   * no attached engine is left, so other engines keep their listeners.
+   */
   public static void releaseThread() {
-    NmeaThread.quit();
+    NmeaThread.release();
   }
 
   /** Asks for the listeners; they are registered on the registration executor. */

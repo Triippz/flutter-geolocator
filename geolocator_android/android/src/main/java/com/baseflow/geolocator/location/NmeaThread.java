@@ -15,6 +15,8 @@ import androidx.annotation.NonNull;
 final class NmeaThread {
   private static HandlerThread thread;
   private static Handler handler;
+  // Attached plugin instances (one per Flutter engine) that may use the thread.
+  private static int users = 0;
 
   private NmeaThread() {}
 
@@ -34,9 +36,20 @@ final class NmeaThread {
     handler().post(task);
   }
 
-  /** Stops the thread after its queued work; the next use starts a new one. */
-  static synchronized void quit() {
-    if (thread != null) {
+  /** Marks one more attached plugin instance as a user of the thread. */
+  static synchronized void retain() {
+    users++;
+  }
+
+  /**
+   * Drops one user. When the last attached plugin instance detaches, the thread stops after its
+   * queued work; the next use starts a new one. Other engines keep the thread while attached.
+   */
+  static synchronized void release() {
+    if (users > 0) {
+      users--;
+    }
+    if (users == 0 && thread != null) {
       thread.quitSafely();
       thread = null;
       handler = null;
